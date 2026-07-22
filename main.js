@@ -35,7 +35,6 @@ function lngLatToPixel(lng, lat) {
     return { u: Math.max(0, Math.min(511, u)), v: Math.max(0, Math.min(511, v)) };
 }
 
-
 // ==========================================
 // 2. ASSET LOADER
 // ==========================================
@@ -64,9 +63,8 @@ function loadAssetsAndStart() {
     imgTerr.onerror = fail; imgTerr.src = "territories.png";
 }
 
-
 // ==========================================
-// 3. MAIN APPLICATION (Merged V1 + V2)
+// 3. MAIN APPLICATION
 // ==========================================
 function initApp(elevPixelData, terrPixelData, isFallback) {
     const canvas = document.querySelector('#webgl-canvas');
@@ -87,12 +85,12 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
     dirLight.position.set(6, 15, 8);
     scene.add(dirLight);
 
-    // --- Build Point Cloud (Fixed Shader Formatting) ---
+    // --- Build Point Cloud ---
     let instancedMesh;
     function buildTerrain() {
         const posList = [], types = [];
         const isMobile = window.innerWidth < 768;
-        const targetPoints = isMobile ? 16000 : 36000;
+        const targetPoints = isMobile ? 18000 : 40000;
         let current = 0;
 
         while (current < targetPoints) {
@@ -106,17 +104,43 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
             let y = 0.0, typeVal = 0.0;
             if (isFallback) {
                 const terr = getTerritory(testLng, testLat);
-                if (terr === "COLOMBIA") { y = getRealisticHeight(testLng, testLat); typeVal = 2.0; }
-                else if (terr === "NEIGHBOR") { y = getRealisticHeight(testLng, testLat); typeVal = 1.0; }
-                else { if (Math.random() > 0.075) continue; y = -0.01; typeVal = 0.0; }
+                if (terr === "COLOMBIA") { 
+                    const hBase = getRealisticHeight(testLng, testLat);
+                    const altitudeBias = 0.25 + 0.75 * (hBase / 2.0);
+                    if (Math.random() > altitudeBias) continue;
+                    y = hBase; typeVal = 2.0; 
+                }
+                else if (terr === "NEIGHBOR") { 
+                    if (Math.random() > 0.20) continue;
+                    y = getRealisticHeight(testLng, testLat); typeVal = 1.0; 
+                }
+                else { 
+                    // RESTORED OCEAN FALLBACK
+                    if (Math.random() > 0.075) continue; 
+                    y = -0.01; typeVal = 0.0; 
+                } 
             } else {
                 const pixel = lngLatToPixel(testLng, testLat);
                 const idx = (pixel.v * 512 + pixel.u) * 4;
-                const r = terrPixelData[idx], b = terrPixelData[idx + 2], elevRaw = elevPixelData[idx];
+                const r = terrPixelData[idx], g = terrPixelData[idx + 1], b = terrPixelData[idx + 2], elevRaw = elevPixelData[idx];
                 
-                if (r > 128) { y = (elevRaw / 255.0) * 1.5 * 0.80; typeVal = 2.0; }
-                else if (b > 128) { y = (elevRaw / 255.0) * 1.5 * 0.80; typeVal = 1.0; }
-                else { if (Math.random() > 0.075) continue; y = -0.01; typeVal = 0.0; }
+                // Strict check for QGIS Red channel (Colombia)
+                if (r > 150 && g < 100 && b < 100) { 
+                    const altitudeBias = 0.25 + 0.75 * (elevRaw / 255.0);
+                    if (Math.random() > altitudeBias) continue;
+                    y = (elevRaw / 255.0) * 1.5 * 0.80; typeVal = 2.0; 
+                }
+                // Strict check for QGIS Blue channel (Neighbors)
+                else if (b > 150 && r < 100 && g < 100) { 
+                    if (Math.random() > 0.20) continue;
+                    y = (elevRaw / 255.0) * 1.5 * 0.80; typeVal = 1.0; 
+                }
+                // Ocean / Everything else
+                else { 
+                    // RESTORED OCEAN PIXEL READING
+                    if (Math.random() > 0.075) continue; 
+                    y = -0.01; typeVal = 0.0; 
+                } 
             }
             
             const x = ((testLng - minLng) / (maxLng - minLng) - 0.5) * scaleFactor;
@@ -141,7 +165,6 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
             shader.uniforms.uSize = { value: (isMobile ? 6.0 : 4.0) * Math.min(window.devicePixelRatio, 2) };
             mat.userData.shader = shader;
             
-            // Clean multiline string with explicit line breaks for WebGL compiler safety
             shader.vertexShader = `
                 attribute float aType;
                 attribute float aElevation;
@@ -182,8 +205,31 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
             shader.fragmentShader = shader.fragmentShader.replace(
                 'vec4 diffuseColor = vec4( diffuse, opacity );',
                 `
-                // Temporary Color: Matches bird color (#4a433a)
-                vec3 customColor = vec3(0.290, 0.263, 0.227);
+                vec3 customColor = vec3(0.0);
+                
+                if (vType < 0.5) {
+                    // OCEAN (Type 0.0) - A subtle sandy/watery beige to contrast with the land
+                    customColor = vec3(0.890, 0.855, 0.780); 
+                }
+                else if (vType < 1.5) {
+                    // NEIGHBORS (Type 1.0) - Flat Color #F2E7CF (Converted to GLSL vec3)
+                    customColor = vec3(0.949, 0.906, 0.812); 
+                } 
+                else {
+                    // COLOMBIA (Type 2.0) - Earth Green fading to Charcoal
+                    float nH = clamp(vElevation / 0.70, 0.0, 1.0);
+                    vec3 c0 = vec3(0.533, 0.608, 0.502); // Earth Green (#889B80)
+                    vec3 c1 = vec3(0.702, 0.651, 0.525); // Soft Pencil Tan
+                    vec3 c2 = vec3(0.553, 0.482, 0.380); // Earthy Brown
+                    vec3 c3 = vec3(0.361, 0.302, 0.239); // Sepia
+                    vec3 c4 = vec3(0.200, 0.169, 0.149); // Dark Charcoal
+                    
+                    if (nH < 0.25) customColor = mix(c0, c1, nH / 0.25);
+                    else if (nH < 0.50) customColor = mix(c1, c2, (nH - 0.25)/0.25);
+                    else if (nH < 0.75) customColor = mix(c2, c3, (nH - 0.50)/0.25);
+                    else customColor = mix(c3, c4, (nH - 0.75)/0.25);
+                }
+                
                 vec4 diffuseColor = vec4(customColor, opacity);
                 `
             );
@@ -200,13 +246,13 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
     
     buildTerrain();
 
-    // Center marker (Earth Green)
+    // Center marker
     const centerMarker = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.2), new THREE.MeshBasicMaterial({ color: 0x2d5a3f }));
     centerMarker.position.y = 0.5;
     scene.add(centerMarker);
 
-    // --- Ambient Birds (V2 Logic, scaled down to match V1 scale) ---
-    const mapWidth = scaleFactor; // 12.0
+    // --- Ambient Birds ---
+    const mapWidth = scaleFactor;
     const birdsCount = 40;
     const birdsGeo = new THREE.BufferGeometry();
     const birdsPos = new Float32Array(birdsCount * 3);
@@ -222,29 +268,16 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
     const birdsMat = new THREE.PointsMaterial({ color: 0x4a433a, size: 0.05, transparent: true, depthWrite: false });
     birdsMat.onBeforeCompile = (shader) => {
         shader.uniforms.mapWidth = { value: mapWidth };
-        shader.vertexShader = `
-            varying vec3 vPos;
-        ` + shader.vertexShader.replace(
-            `#include <begin_vertex>`, 
-            `#include <begin_vertex>\n vPos = position;`
-        );
-        shader.fragmentShader = `
-            uniform float mapWidth; 
-            varying vec3 vPos;
-        ` + shader.fragmentShader.replace(
+        shader.vertexShader = `varying vec3 vPos;` + shader.vertexShader.replace(`#include <begin_vertex>`, `#include <begin_vertex>\n vPos = position;`);
+        shader.fragmentShader = `uniform float mapWidth; varying vec3 vPos;` + shader.fragmentShader.replace(
             `vec4 diffuseColor = vec4( diffuse, opacity );`,
-            `
-            float dist = length(vPos.xz); 
-            float edgeFade = smoothstep(mapWidth * 0.5, mapWidth * 0.4, dist); 
-            vec4 diffuseColor = vec4( diffuse, opacity * edgeFade );
-            `
+            `float dist = length(vPos.xz); float edgeFade = smoothstep(mapWidth * 0.5, mapWidth * 0.4, dist); vec4 diffuseColor = vec4( diffuse, opacity * edgeFade );`
         );
     };
     const flockOfBirds = new THREE.Points(birdsGeo, birdsMat);
     scene.add(flockOfBirds);
 
-
-    // --- Custom Drone Camera Controller (V2 Logic, re-calibrated for V1 scale) ---
+    // --- Custom Drone Camera Controller ---
     const camState = { targetX: 0, targetZ: 2, targetYaw: 0, zoom: 0.3 };
     let isDragging = false, lastMousePos = { x: 0, y: 0 }, touchStartDist = 0;
 
@@ -265,7 +298,8 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
         camState.targetYaw += deltaX * (0.0012 * (1.0 - cenitalProgress));
 
         const baseSpeed = 0.0026; 
-        const zoomComp = 1.0 - (camState.zoom * 0.3);
+        const zoomComp = 1.0 + (camState.zoom * 1.5); 
+
         const moveDistY = deltaY * baseSpeed * zoomComp;
         const moveDistX = -deltaX * baseSpeed * zoomComp * cenitalProgress;
 
@@ -339,5 +373,4 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
     animate();
 }
 
-// Start sequence
 loadAssetsAndStart();
