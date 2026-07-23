@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import gsap from 'gsap';
 
 // ==========================================
-// 1. V1 GEOGRAPHIC CONSTANTS & MATH
+// 1. GEOGRAPHIC CONSTANTS & URT DATA
 // ==========================================
 const minLng = -83.5, maxLng = -64.5;
 const minLat = -5.0, maxLat = 14.0;
@@ -10,25 +10,26 @@ const scaleFactor = 12.0;
 const centerLng = -74.0, centerLat = 4.5;
 const sphereRadius = 9.5; 
 
-const colombiaPolygon = [[-71.6, 12.45], [-71.3, 12.15], [-71.3, 11.8], [-72.3, 11.4], [-72.5, 10.3], [-72.9, 9.2], [-72.2, 9.0], [-72.5, 8.2], [-72.1, 7.5], [-72.4, 7.1], [-71.5, 7.1], [-70.8, 6.2], [-67.8, 6.2], [-67.4, 5.0], [-67.8, 3.8], [-67.5, 1.8], [-66.8, 1.2], [-69.8, 1.1], [-69.9, -4.2], [-70.5, -4.2], [-71.5, -3.0], [-73.0, -2.1], [-74.5, -1.8], [-75.2, -0.1], [-76.2, -0.1], [-77.8, -1.0], [-79.0, 1.2], [-79.0, 1.6], [-78.2, 2.5], [-77.4, 3.2], [-77.3, 4.5], [-77.4, 5.5], [-77.4, 6.8], [-77.7, 7.3], [-77.9, 7.8], [-77.3, 8.3], [-76.8, 8.5], [-76.3, 8.0], [-75.5, 9.6], [-75.6, 10.4], [-74.8, 11.0], [-73.2, 11.2], [-73.0, 11.6], [-72.5, 12.1], [-71.6, 12.45]];
-function isPointInPolygon(pt, poly) {
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
-        if (((yi > pt[1]) !== (yj > pt[1])) && (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi)) inside = !inside;
-    }
-    return inside;
-}
-function getTerritory(lng, lat) {
-    if (isPointInPolygon([lng, lat], colombiaPolygon)) return "COLOMBIA";
-    if (lng < -77.5 && lat < 7.0) return (lat < 1.5 && lng > -80.5) ? "NEIGHBOR" : "OCEAN";
-    if (lat > 11.5) return (lng > -73.0 && lng < -71.0 && lat < 12.5) ? "COLOMBIA" : "OCEAN";
-    if (lat > 9.0 && lat < 11.5 && lng < -76.8) return (lng < -77.3 && lat < 9.5) ? "NEIGHBOR" : "OCEAN";
-    return "NEIGHBOR";
-}
-function getRealisticHeight(lng, lat) {
-    return Math.random() * 0.5 + 0.1;
-}
+const departments = [
+    { name: "DT Antioquia", sedes: "SEDE: Medellín" },
+    { name: "DT Apartadó", sedes: "SEDE: Apartadó" },
+    { name: "DT Bogotá", sedes: "SEDE: Bogotá" },
+    { name: "DT Bolívar", sedes: "SEDES: El Carmen de Bolívar, Sincelejo" },
+    { name: "DT Caquetá", sedes: "SEDE: Florencia" },
+    { name: "DT Cauca", sedes: "SEDES: Popayán, Neiva" },
+    { name: "DT Cesar", sedes: "SEDE: Valledupar" },
+    { name: "DT Chocó", sedes: "SEDE: Quibdó" },
+    { name: "DT Córdoba", sedes: "SEDES: Montería, Caucasia" },
+    { name: "DT Magdalena", sedes: "SEDE: Santa Marta" },
+    { name: "DT Magdalena Medio", sedes: "SEDES: Barrancabermeja, Bucaramanga" },
+    { name: "DT Meta", sedes: "SEDE: Villavicencio" },
+    { name: "DT Nariño", sedes: "SEDES: Pasto, Tumaco" },
+    { name: "DT Norte de Santander", sedes: "SEDE: Cúcuta" },
+    { name: "DT Putumayo", sedes: "SEDE: Mocoa" },
+    { name: "DT Tolima", sedes: "SEDE: Ibagué" },
+    { name: "DT Valle del Cauca", sedes: "SEDES: Pereira, Cali" }
+];
+
 function lngLatToPixel(lng, lat) {
     const u = Math.floor(((lng - minLng) / (maxLng - minLng)) * 512);
     const v = Math.floor((1.0 - (lat - minLat) / (maxLat - minLat)) * 512);
@@ -36,37 +37,44 @@ function lngLatToPixel(lng, lat) {
 }
 
 // ==========================================
-// 2. ASSET LOADER
+// 2. 4-ASSET LOADER
 // ==========================================
-let elevData = null, terrData = null;
+let elevData = null, terrData = null, dtsData = null, forestData = null;
 
 function loadAssetsAndStart() {
     let loaded = 0, booted = false;
-    const checkReady = () => { if (++loaded === 2 && !booted) { booted = true; initApp(elevData, terrData, false); } };
-    const fail = () => { if (!booted) { booted = true; console.warn("Using procedural fallback."); initApp(null, null, true); } };
-    setTimeout(fail, 1500);
-
-    const imgElev = new Image();
-    imgElev.onload = () => {
-        const cvs = document.createElement('canvas'); cvs.width = 512; cvs.height = 512;
-        const ctx = cvs.getContext('2d'); ctx.drawImage(imgElev, 0, 0);
-        elevData = ctx.getImageData(0, 0, 512, 512).data; checkReady();
+    const checkReady = () => { if (++loaded === 4 && !booted) { booted = true; initApp(elevData, terrData, dtsData, forestData, false); } };
+    const fail = (e) => { 
+        if (!booted) { 
+            booted = true; 
+            console.warn("Image asset failed. Running procedural fallback.", e); 
+            initApp(null, null, null, null, true); 
+        } 
     };
-    imgElev.onerror = fail; imgElev.src = "elevation.png";
+    setTimeout(() => { if (!booted) fail("Timeout"); }, 2500);
 
-    const imgTerr = new Image();
-    imgTerr.onload = () => {
-        const cvs = document.createElement('canvas'); cvs.width = 512; cvs.height = 512;
-        const ctx = cvs.getContext('2d'); ctx.drawImage(imgTerr, 0, 0);
-        terrData = ctx.getImageData(0, 0, 512, 512).data; checkReady();
-    };
-    imgTerr.onerror = fail; imgTerr.src = "territories.png";
+    function loadImage(src, callback) {
+        const img = new Image();
+        img.onload = () => {
+            const cvs = document.createElement('canvas'); cvs.width = 512; cvs.height = 512;
+            const ctx = cvs.getContext('2d'); ctx.drawImage(img, 0, 0);
+            callback(ctx.getImageData(0, 0, 512, 512).data);
+            checkReady();
+        };
+        img.onerror = fail;
+        img.src = src;
+    }
+
+    loadImage("elevation.png", data => elevData = data);
+    loadImage("territories.png", data => terrData = data);
+    loadImage("dts.png", data => dtsData = data);
+    loadImage("forest.png", data => forestData = data);
 }
 
 // ==========================================
 // 3. MAIN APPLICATION
 // ==========================================
-function initApp(elevPixelData, terrPixelData, isFallback) {
+function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, isFallback) {
     const canvas = document.querySelector('#webgl-canvas');
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xf4ebd8);
@@ -88,7 +96,7 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
     // --- Build Point Cloud ---
     let instancedMesh;
     function buildTerrain() {
-        const posList = [], types = [];
+        const posList = [], types = [], dtList = [], forestList = [];
         const isMobile = window.innerWidth < 768;
         const targetPoints = isMobile ? 18000 : 40000;
         let current = 0;
@@ -101,75 +109,85 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
             
             if (dist / sphereRadius > 0.90 && Math.random() > Math.pow((1.0 - dist / sphereRadius) / 0.10, 1.5)) continue;
 
-            let y = 0.0, typeVal = 0.0;
-            if (isFallback) {
-                const terr = getTerritory(testLng, testLat);
-                if (terr === "COLOMBIA") { 
-                    const hBase = getRealisticHeight(testLng, testLat);
-                    const altitudeBias = 0.25 + 0.75 * (hBase / 2.0);
-                    if (Math.random() > altitudeBias) continue;
-                    y = hBase; typeVal = 2.0; 
-                }
-                else if (terr === "NEIGHBOR") { 
-                    if (Math.random() > 0.20) continue;
-                    y = getRealisticHeight(testLng, testLat); typeVal = 1.0; 
-                }
-                else { 
-                    // RESTORED OCEAN FALLBACK
-                    if (Math.random() > 0.075) continue; 
-                    y = -0.01; typeVal = 0.0; 
-                } 
-            } else {
+            let y = 0.0, typeVal = 0.0, dtVal = -1.0, forestVal = 0.0;
+
+            if (!isFallback && terrPixelData) {
                 const pixel = lngLatToPixel(testLng, testLat);
                 const idx = (pixel.v * 512 + pixel.u) * 4;
                 const r = terrPixelData[idx], g = terrPixelData[idx + 1], b = terrPixelData[idx + 2], elevRaw = elevPixelData[idx];
                 
-                // Strict check for QGIS Red channel (Colombia)
+                if (forestPixelData) forestVal = forestPixelData[idx] / 255.0;
+
+                if (dtsPixelData && dtsPixelData[idx] > 0) {
+                    dtVal = Math.round(dtsPixelData[idx] / 15.0) - 1.0;
+                }
+
                 if (r > 150 && g < 100 && b < 100) { 
                     const altitudeBias = 0.25 + 0.75 * (elevRaw / 255.0);
                     if (Math.random() > altitudeBias) continue;
                     y = (elevRaw / 255.0) * 1.5 * 0.80; typeVal = 2.0; 
                 }
-                // Strict check for QGIS Blue channel (Neighbors)
                 else if (b > 150 && r < 100 && g < 100) { 
                     if (Math.random() > 0.20) continue;
                     y = (elevRaw / 255.0) * 1.5 * 0.80; typeVal = 1.0; 
                 }
-                // Ocean / Everything else
                 else { 
-                    // RESTORED OCEAN PIXEL READING
                     if (Math.random() > 0.075) continue; 
                     y = -0.01; typeVal = 0.0; 
                 } 
+            } else {
+                if (Math.random() > 0.3) continue;
+                y = Math.random() * 0.5; typeVal = 2.0;
             }
             
             const x = ((testLng - minLng) / (maxLng - minLng) - 0.5) * scaleFactor;
             const z = -(((testLat - minLat) / (maxLat - minLat) - 0.5)) * scaleFactor;
+            
             posList.push(new THREE.Vector3(x, y, z));
             types.push(typeVal);
+            dtList.push(dtVal);
+            forestList.push(forestVal);
             current++;
         }
 
         const geo = new THREE.IcosahedronGeometry(0.016, 0);
         const typesArr = new Float32Array(posList.length);
         const elevArr = new Float32Array(posList.length);
-        for(let i=0; i<posList.length; i++) { typesArr[i] = types[i]; elevArr[i] = posList[i].y; }
+        const dtArr = new Float32Array(posList.length);
+        const forestArr = new Float32Array(posList.length);
+
+        for(let i = 0; i < posList.length; i++) { 
+            typesArr[i] = types[i]; 
+            elevArr[i] = posList[i].y; 
+            dtArr[i] = dtList[i];
+            forestArr[i] = forestList[i];
+        }
         
         geo.setAttribute('aType', new THREE.InstancedBufferAttribute(typesArr, 1));
         geo.setAttribute('aElevation', new THREE.InstancedBufferAttribute(elevArr, 1));
+        geo.setAttribute('aDT', new THREE.InstancedBufferAttribute(dtArr, 1));
+        geo.setAttribute('aForest', new THREE.InstancedBufferAttribute(forestArr, 1));
 
         const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true });
         
         mat.onBeforeCompile = (shader) => {
             shader.uniforms.uTime = { value: 0 };
             shader.uniforms.uSize = { value: (isMobile ? 6.0 : 4.0) * Math.min(window.devicePixelRatio, 2) };
+            shader.uniforms.uHoveredDT = { value: -1.0 }; 
+            shader.uniforms.uHoverBlend = { value: 0.0 }; 
+            
             mat.userData.shader = shader;
             
             shader.vertexShader = `
                 attribute float aType;
                 attribute float aElevation;
+                attribute float aDT;
+                attribute float aForest;
+                
                 varying float vElevation;
                 varying float vType;
+                varying float vDT;
+                
                 uniform float uTime;
                 uniform float uSize;
             ` + shader.vertexShader;
@@ -180,7 +198,10 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
                 #include <begin_vertex>
                 vType = aType;
                 vElevation = aElevation;
-                transformed *= (uSize / 4.0);
+                vDT = aDT;
+                
+                float sizeMult = 0.7 + (aForest * 1.1);
+                transformed *= (uSize / 4.0) * sizeMult;
                 
                 vec4 iPos = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
                 float sway = (aType < 1.5) ? 0.04 : 0.14;
@@ -200,6 +221,9 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
             shader.fragmentShader = `
                 varying float vElevation;
                 varying float vType;
+                varying float vDT;
+                uniform float uHoveredDT;
+                uniform float uHoverBlend;
             ` + shader.fragmentShader;
 
             shader.fragmentShader = shader.fragmentShader.replace(
@@ -208,26 +232,29 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
                 vec3 customColor = vec3(0.0);
                 
                 if (vType < 0.5) {
-                    // OCEAN (Type 0.0) - A subtle sandy/watery beige to contrast with the land
                     customColor = vec3(0.890, 0.855, 0.780); 
                 }
                 else if (vType < 1.5) {
-                    // NEIGHBORS (Type 1.0) - Flat Color #F2E7CF (Converted to GLSL vec3)
-                    customColor = vec3(0.949, 0.906, 0.812); 
+                    customColor = vec3(0.953, 0.914, 0.830); 
                 } 
                 else {
-                    // COLOMBIA (Type 2.0) - Earth Green fading to Charcoal
                     float nH = clamp(vElevation / 0.70, 0.0, 1.0);
-                    vec3 c0 = vec3(0.533, 0.608, 0.502); // Earth Green (#889B80)
-                    vec3 c1 = vec3(0.702, 0.651, 0.525); // Soft Pencil Tan
-                    vec3 c2 = vec3(0.553, 0.482, 0.380); // Earthy Brown
-                    vec3 c3 = vec3(0.361, 0.302, 0.239); // Sepia
-                    vec3 c4 = vec3(0.200, 0.169, 0.149); // Dark Charcoal
+                    vec3 c0 = vec3(0.533, 0.608, 0.502); // Earth Green
+                    vec3 c1 = vec3(0.702, 0.651, 0.525); 
+                    vec3 c2 = vec3(0.553, 0.482, 0.380); 
+                    vec3 c3 = vec3(0.361, 0.302, 0.239); 
+                    vec3 c4 = vec3(0.200, 0.169, 0.149); // Charcoal
                     
                     if (nH < 0.25) customColor = mix(c0, c1, nH / 0.25);
                     else if (nH < 0.50) customColor = mix(c1, c2, (nH - 0.25)/0.25);
                     else if (nH < 0.75) customColor = mix(c2, c3, (nH - 0.50)/0.25);
                     else customColor = mix(c3, c4, (nH - 0.75)/0.25);
+
+                    // HOVER HIGHLIGHT: Dark Brick / Red Dirt (#A83D1E)
+                    if (uHoveredDT >= 0.0 && abs(vDT - uHoveredDT) < 0.1) {
+                        vec3 darkBrick = vec3(0.659, 0.239, 0.118);
+                        customColor = mix(customColor, darkBrick, 0.88 * uHoverBlend);
+                    }
                 }
                 
                 vec4 diffuseColor = vec4(customColor, opacity);
@@ -246,12 +273,28 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
     
     buildTerrain();
 
-    // Center marker
-    const centerMarker = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.2), new THREE.MeshBasicMaterial({ color: 0x2d5a3f }));
-    centerMarker.position.y = 0.5;
-    scene.add(centerMarker);
+    // --- Displaced 3D Terrain Collider Mesh ---
+    const rayTerrainGeo = new THREE.PlaneGeometry(scaleFactor, scaleFactor, 64, 64);
+    rayTerrainGeo.rotateX(-Math.PI / 2);
+    if (!isFallback && elevPixelData) {
+        const posAttr = rayTerrainGeo.attributes.position;
+        for (let i = 0; i < posAttr.count; i++) {
+            const x = posAttr.getX(i);
+            const z = posAttr.getZ(i);
+            const lng = minLng + ((x / scaleFactor) + 0.5) * (maxLng - minLng);
+            const lat = minLat + ((-z / scaleFactor) + 0.5) * (maxLat - minLat);
+            const pixel = lngLatToPixel(lng, lat);
+            const idx = (pixel.v * 512 + pixel.u) * 4;
+            const elevRaw = elevPixelData[idx];
+            const y = (elevRaw / 255.0) * 1.5 * 0.80;
+            posAttr.setY(i, y);
+        }
+        rayTerrainGeo.computeVertexNormals();
+    }
+    const rayTerrainMesh = new THREE.Mesh(rayTerrainGeo, new THREE.MeshBasicMaterial({ visible: false }));
+    scene.add(rayTerrainMesh);
 
-    // --- Ambient Birds ---
+    // Ambient Birds
     const mapWidth = scaleFactor;
     const birdsCount = 40;
     const birdsGeo = new THREE.BufferGeometry();
@@ -281,8 +324,7 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
     const camState = { targetX: 0, targetZ: 2, targetYaw: 0, zoom: 0.3 };
     let isDragging = false, lastMousePos = { x: 0, y: 0 }, touchStartDist = 0;
 
-    const innerLimit = mapWidth * 0.25; 
-    const outerLimit = mapWidth * 0.45; 
+    const innerLimit = mapWidth * 0.25, outerLimit = mapWidth * 0.45; 
     function applyFriction(currentPos, move) {
         if (currentPos > innerLimit && move > 0) return move * Math.max(0, 1.0 - ((currentPos - innerLimit) / (outerLimit - innerLimit)));
         if (currentPos < -innerLimit && move < 0) return move * Math.max(0, 1.0 - ((Math.abs(currentPos) - innerLimit) / (outerLimit - innerLimit)));
@@ -297,9 +339,7 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
         const cenitalProgress = Math.max(0, Math.min(1, (camState.zoom - 0.8) / 0.2));
         camState.targetYaw += deltaX * (0.0012 * (1.0 - cenitalProgress));
 
-        const baseSpeed = 0.0026; 
-        const zoomComp = 1.0 + (camState.zoom * 1.5); 
-
+        const baseSpeed = 0.0026, zoomComp = 1.0 + (camState.zoom * 1.5); 
         const moveDistY = deltaY * baseSpeed * zoomComp;
         const moveDistX = -deltaX * baseSpeed * zoomComp * cenitalProgress;
 
@@ -315,23 +355,97 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
     window.addEventListener('pointerup', () => isDragging = false);
     window.addEventListener('pointermove', (e) => handleMove(e.clientX, e.clientY));
     window.addEventListener('wheel', (e) => { camState.zoom = Math.max(0, Math.min(1, camState.zoom + e.deltaY * 0.0003)); });
+
+    // ==========================================
+    // 4. RAYCASTER & HOVER CONTROLLER
+    // ==========================================
+    const raycaster = new THREE.Raycaster();
+    const mouseVec = new THREE.Vector2();
     
-    window.addEventListener('touchstart', (e) => {
-        if (e.touches.length === 1) handleDown(e.touches[0].clientX, e.touches[0].clientY);
-        else if (e.touches.length === 2) { isDragging = false; touchStartDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); }
-    });
-    window.addEventListener('touchmove', (e) => {
-        if (e.touches.length === 1 && isDragging) handleMove(e.touches[0].clientX, e.touches[0].clientY);
-        else if (e.touches.length === 2) {
-            const curDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-            camState.zoom = Math.max(0, Math.min(1, camState.zoom + (touchStartDist - curDist) * 0.0015));
-            touchStartDist = curDist; 
+    let activeDT = -1;
+    let textTimer = null;
+
+    window.addEventListener('mousemove', (e) => {
+        cursorX = e.clientX;
+        cursorY = e.clientY;
+
+        if (!isDragging && dtsData) {
+            mouseVec.x = (e.clientX / window.innerWidth) * 2 - 1;
+            mouseVec.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouseVec, camera);
+            const intersects = raycaster.intersectObject(rayTerrainMesh);
+            
+            let detectedIdx = -1;
+
+            if (intersects.length > 0) {
+                const hitPoint = intersects[0].point;
+                const lng = minLng + ((hitPoint.x / scaleFactor) + 0.5) * (maxLng - minLng);
+                const lat = minLat + ((-hitPoint.z / scaleFactor) + 0.5) * (maxLat - minLat);
+
+                const pixel = lngLatToPixel(lng, lat);
+                const idx = (pixel.v * 512 + pixel.u) * 4;
+                const rVal = dtsData[idx];
+
+                if (rVal > 0) {
+                    detectedIdx = Math.round(rVal / 15.0) - 1;
+                }
+            }
+
+            // Trigger state change only when hovering a NEW region or exiting
+            if (detectedIdx !== activeDT) {
+                activeDT = detectedIdx;
+
+                const titleEl = document.querySelector('#location-title');
+
+                // Cancel previous timer & hide text immediately
+                if (textTimer) { clearTimeout(textTimer); textTimer = null; }
+                if (titleEl) {
+                    titleEl.style.opacity = '0';
+                }
+
+                const shader = instancedMesh?.material?.userData?.shader;
+
+                if (activeDT >= 0 && departments[activeDT]) {
+                    // 1. Start 1-second delay for the centered URT text
+                    textTimer = setTimeout(() => {
+                        const currentTitle = document.querySelector('#location-title');
+                        if (activeDT >= 0 && departments[activeDT] && currentTitle) {
+                            currentTitle.innerText = departments[activeDT].name;
+                            currentTitle.style.opacity = '1';
+                        }
+                    }, 1000);
+
+                    // 2. Start smooth Dark Brick color fade-in
+                    if (shader) {
+                        shader.uniforms.uHoveredDT.value = activeDT;
+                        gsap.to(shader.uniforms.uHoverBlend, {
+                            value: 1.0,
+                            duration: 0.6,
+                            ease: 'power2.out',
+                            overwrite: true
+                        });
+                    }
+                } else {
+                    // Moved out into empty space: fade color out
+                    if (shader) {
+                        gsap.to(shader.uniforms.uHoverBlend, {
+                            value: 0.0,
+                            duration: 0.5,
+                            ease: 'power2.out',
+                            overwrite: true,
+                            onComplete: () => {
+                                shader.uniforms.uHoveredDT.value = -1.0;
+                            }
+                        });
+                    }
+                }
+            }
         }
     });
 
     const cursorElement = document.querySelector('#custom-cursor');
     let cursorX = window.innerWidth / 2, cursorY = window.innerHeight / 2, cursorRot = 0;
-    window.addEventListener('mousemove', (e) => { cursorX = e.clientX; cursorY = e.clientY; });
     window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
 
     // --- Render Loop ---
@@ -366,7 +480,9 @@ function initApp(elevPixelData, terrPixelData, isFallback) {
         if (Math.abs(camVelX) > 0.0005 || Math.abs(camVelZ) > 0.0005) {
             cursorRot = Math.atan2(camVelZ, camVelX) * (180 / Math.PI) + 90;
         }
-        cursorElement.style.transform = `translate(${cursorX}px, ${cursorY}px) rotate(${cursorRot}deg)`;
+        if (cursorElement) {
+            cursorElement.style.transform = `translate(${cursorX}px, ${cursorY}px) rotate(${cursorRot}deg)`;
+        }
 
         renderer.render(scene, camera);
     }
