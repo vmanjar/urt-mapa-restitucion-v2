@@ -85,6 +85,10 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
     camera.rotation.order = "YXZ"; 
 
+    // Global "Ghost Camera" tracking for the Sunflower delay
+    const delayedCamQuat = new THREE.Quaternion();
+    const delayedCamMat3 = new THREE.Matrix3();
+
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -95,10 +99,7 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
     dirLight.position.set(6, 15, 8);
     scene.add(dirLight);
 
-    // Track delayed camera position for the "Sunflower" 2D rotation effect
-    const smoothCamPos = new THREE.Vector3(0, 10, 10);
-
-    // --- Build 2D Point Cloud ---
+    // --- Build Point Cloud ---
     let instancedMesh;
     function buildTerrain() {
         const posList = [], types = [], dtList = [], forestList = [];
@@ -168,8 +169,9 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
             }
         });
 
-        // Use 2D Plane Geometry (0.032 x 0.032) instead of 3D Icosahedron
-        const geo = new THREE.PlaneGeometry(0.032, 0.032);
+        // 1. SWAP GEOMETRY: Now using flat 2D Circles!
+        const geo = new THREE.CircleGeometry(0.016, 12);
+        
         const typesArr = new Float32Array(posList.length);
         const elevArr = new Float32Array(posList.length);
         const dtArr = new Float32Array(posList.length);
@@ -187,14 +189,14 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
         geo.setAttribute('aDT', new THREE.InstancedBufferAttribute(dtArr, 1));
         geo.setAttribute('aForest', new THREE.InstancedBufferAttribute(forestArr, 1));
 
-        const mat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+        const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true });
         
         mat.onBeforeCompile = (shader) => {
             shader.uniforms.uTime = { value: 0 };
             shader.uniforms.uSize = { value: (isMobile ? 6.0 : 4.0) * Math.min(window.devicePixelRatio, 2) };
             shader.uniforms.uHoveredDT = { value: -1.0 }; 
             shader.uniforms.uHoverBlend = { value: 0.0 }; 
-            shader.uniforms.uSmoothCamPos = { value: smoothCamPos };
+            shader.uniforms.uDelayedRot = { value: new THREE.Matrix3() }; // 2. NEW: Delayed Rotation Matrix Uniform
             
             mat.userData.shader = shader;
             
@@ -207,47 +209,50 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
                 varying float vElevation;
                 varying float vType;
                 varying float vDT;
-                varying vec2 vUv;
                 
                 uniform float uTime;
                 uniform float uSize;
-                uniform vec3 uSmoothCamPos;
+                uniform mat3 uDelayedRot;
             ` + shader.vertexShader;
+
+            // Rotate normals for perfect lighting
+            shader.vertexShader = shader.vertexShader.replace(
+                '#include <begin_normal_vertex>',
+                `
+                #include <begin_normal_vertex>
+                objectNormal = uDelayedRot * objectNormal;
+                `
+            );
 
             shader.vertexShader = shader.vertexShader.replace(
                 '#include <begin_vertex>',
                 `
+                #include <begin_vertex>
                 vType = aType;
                 vElevation = aElevation;
                 vDT = aDT;
-                vUv = uv;
                 
                 float sizeMult = 0.7 + (aForest * 1.1);
-                vec3 localPos = position * (uSize / 4.0) * sizeMult;
+
+                // 3. SUNFLOWER MATH: Rotate the flat circle to face the delayed camera
+                transformed = uDelayedRot * position;
+
+                // Scale
+                transformed *= (uSize / 4.0) * sizeMult;
                 
+                // Apply Sway and Wave offset directly to the local transformed position
                 vec4 iPos = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
                 float sway = (aType < 1.5) ? 0.04 : 0.14;
                 float wave = sin(uTime * 1.4 + iPos.x * 1.1 + iPos.z * 1.1) * cos(uTime * 1.0 + iPos.x * 0.7) * 0.06;
                 
                 if (aType > 0.5) { 
-                    iPos.x += aElevation * wave * sway; 
-                    iPos.z += aElevation * wave * sway * 0.4; 
+                    transformed.x += aElevation * wave * sway; 
+                    transformed.z += aElevation * wave * sway * 0.4; 
                 } else { 
                     float oW = sin(iPos.x * 2.2 + uTime * 1.6) * cos(iPos.z * 2.2 + uTime * 1.2) * 0.035; 
-                    iPos.y += oW; 
+                    transformed.y += oW; 
                     vElevation += oW; 
                 }
-
-                // SUNFLOWER BILLBOARD ROTATION (Turn 2D faces toward uSmoothCamPos)
-                vec3 targetVec = normalize(uSmoothCamPos - iPos.xyz);
-                vec3 up = vec3(0.0, 1.0, 0.0);
-                if (abs(dot(targetVec, up)) > 0.99) {
-                    up = vec3(0.0, 0.0, 1.0);
-                }
-                vec3 rightVec = normalize(cross(up, targetVec));
-                vec3 upVec = cross(targetVec, rightVec);
-
-                vec3 transformed = iPos.xyz + (rightVec * localPos.x + upVec * localPos.y + targetVec * localPos.z);
                 `
             );
 
@@ -255,8 +260,6 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
                 varying float vElevation;
                 varying float vType;
                 varying float vDT;
-                varying vec2 vUv;
-                
                 uniform float uHoveredDT;
                 uniform float uHoverBlend;
             ` + shader.fragmentShader;
@@ -264,10 +267,6 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
             shader.fragmentShader = shader.fragmentShader.replace(
                 'vec4 diffuseColor = vec4( diffuse, opacity );',
                 `
-                // 2D Disc Cutout Shader
-                float distToCenter = length(vUv - vec2(0.5));
-                if (distToCenter > 0.5) discard;
-
                 vec3 customColor = vec3(0.0);
                 
                 if (vType < 0.5) {
@@ -278,18 +277,17 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
                 } 
                 else {
                     float nH = clamp(vElevation / 0.70, 0.0, 1.0);
-                    vec3 c0 = vec3(0.533, 0.608, 0.502); // Earth Green
+                    vec3 c0 = vec3(0.533, 0.608, 0.502); 
                     vec3 c1 = vec3(0.702, 0.651, 0.525); 
                     vec3 c2 = vec3(0.553, 0.482, 0.380); 
                     vec3 c3 = vec3(0.361, 0.302, 0.239); 
-                    vec3 c4 = vec3(0.200, 0.169, 0.149); // Charcoal
+                    vec3 c4 = vec3(0.200, 0.169, 0.149); 
                     
                     if (nH < 0.25) customColor = mix(c0, c1, nH / 0.25);
                     else if (nH < 0.50) customColor = mix(c1, c2, (nH - 0.25)/0.25);
                     else if (nH < 0.75) customColor = mix(c2, c3, (nH - 0.50)/0.25);
                     else customColor = mix(c3, c4, (nH - 0.75)/0.25);
 
-                    // HOVER HIGHLIGHT: Dark Brick (#A83D1E)
                     if (uHoveredDT >= 0.0 && abs(vDT - uHoveredDT) < 0.1) {
                         vec3 darkBrick = vec3(0.659, 0.239, 0.118);
                         customColor = mix(customColor, darkBrick, 0.88 * uHoverBlend);
@@ -488,7 +486,7 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
                     hoverColorTimer = setTimeout(() => {
                         activeDT = pendingDT;
                         if (shader && activeDT >= 0) {
-                            shader.uniforms.uHoveredDT.value = activeDT;
+                            shader.uniforms.uHoveredDT.value = activeDT; 
                             gsap.to(shader.uniforms.uHoverBlend, {
                                 value: 1.0, duration: 0.5, ease: 'power2.out', overwrite: true
                             });
@@ -515,7 +513,6 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
         }
     });
 
-    // --- SAFE CLICK HANDLER ---
     window.addEventListener('click', (e) => {
         const dragDist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
         const duration = performance.now() - pointerDownTime;
@@ -550,10 +547,7 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
         if (shader) {
             shader.uniforms.uHoveredDT.value = dtIndex;
             gsap.to(shader.uniforms.uHoverBlend, {
-                value: 1.0,
-                duration: 0.8,
-                ease: 'power2.out',
-                overwrite: true
+                value: 1.0, duration: 0.8, ease: 'power2.out', overwrite: true
             });
         }
 
@@ -602,11 +596,7 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
         }
 
         gsap.to(camState, {
-            targetX: 0,
-            targetZ: 2,
-            zoom: 0.3,
-            duration: 1.4,
-            ease: 'power2.out'
+            targetX: 0, targetZ: 2, zoom: 0.3, duration: 1.4, ease: 'power2.out'
         });
     }
 
@@ -622,13 +612,23 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
     let cursorX = window.innerWidth / 2, cursorY = window.innerHeight / 2, cursorRot = 0;
     window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
 
+    // Initialize tracking for initial camera quaternion
+    delayedCamQuat.copy(camera.quaternion);
+
     // --- Render Loop ---
     const lerp = (s, e, f) => s + (e - s) * f;
     function animate() {
         requestAnimationFrame(animate);
         const time = performance.now() * 0.001; 
         
-        if (instancedMesh && instancedMesh.material.userData.shader) instancedMesh.material.userData.shader.uniforms.uTime.value = time;
+        // 4. SUNFLOWER DELAY MATH: SLERP the Ghost Camera towards the Real Camera (Factor 0.05)
+        delayedCamQuat.slerp(camera.quaternion, 0.05);
+        delayedCamMat3.setFromMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(delayedCamQuat));
+
+        if (instancedMesh && instancedMesh.material.userData.shader) {
+            instancedMesh.material.userData.shader.uniforms.uTime.value = time;
+            instancedMesh.material.userData.shader.uniforms.uDelayedRot.value.copy(delayedCamMat3);
+        }
 
         const positions = flockOfBirds.geometry.attributes.position.array;
         for(let i = 0; i < birdsCount; i++) {
@@ -645,12 +645,6 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
 
         const lastCamX = camera.position.x, lastCamZ = camera.position.z;
 
-        // SUNFLOWER DELAYED CAMERA TRACKER (Lerp factor 0.025)
-        smoothCamPos.x = lerp(smoothCamPos.x, camera.position.x, 0.025);
-        smoothCamPos.y = lerp(smoothCamPos.y, camera.position.y, 0.025);
-        smoothCamPos.z = lerp(smoothCamPos.z, camera.position.z, 0.025);
-
-        // SILKY SMOOTH PARALLAX LERP
         smoothMouseX = lerp(smoothMouseX, normMouseX, 0.02);
         smoothMouseY = lerp(smoothMouseY, normMouseY, 0.02);
 
