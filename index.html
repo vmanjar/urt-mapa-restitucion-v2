@@ -12,7 +12,22 @@
     
     <!-- UI Layer -->
     <div id="ui-layer">
-      <h1 id="location-title"></h1>
+      <!-- Back Button -->
+      <button id="btn-back" class="hidden">← Volver al mapa</button>
+
+      <!-- Centered Title & Illustration Banner Container -->
+      <div id="location-card">
+        <div id="location-banner" class="hidden">
+          <div class="banner-placeholder">ILUSTRACIÓN DE LA TERRITORIAL</div>
+        </div>
+        <h1 id="location-title"></h1>
+      </div>
+
+      <!-- Scroll Prompt Cue -->
+      <div id="scroll-prompt" class="hidden">
+        <span>Desliza para explorar</span>
+        <div class="scroll-arrow">↓</div>
+      </div>
     </div>
 
     <!-- Custom Butterfly Cursor -->

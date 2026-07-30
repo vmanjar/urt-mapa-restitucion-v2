@@ -30,6 +30,8 @@ const departments = [
     { name: "DT Valle del Cauca", sedes: "SEDES: Pereira, Cali" }
 ];
 
+const dtCentroids = Array.from({ length: 17 }, () => ({ x: 0, z: 0, count: 0 }));
+
 function lngLatToPixel(lng, lat) {
     const u = Math.floor(((lng - minLng) / (maxLng - minLng)) * 512);
     const v = Math.floor((1.0 - (lat - minLat) / (maxLat - minLat)) * 512);
@@ -93,7 +95,10 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
     dirLight.position.set(6, 15, 8);
     scene.add(dirLight);
 
-    // --- Build Point Cloud ---
+    // Track delayed camera position for the "Sunflower" 2D rotation effect
+    const smoothCamPos = new THREE.Vector3(0, 10, 10);
+
+    // --- Build 2D Point Cloud ---
     let instancedMesh;
     function buildTerrain() {
         const posList = [], types = [], dtList = [], forestList = [];
@@ -143,6 +148,12 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
             const x = ((testLng - minLng) / (maxLng - minLng) - 0.5) * scaleFactor;
             const z = -(((testLat - minLat) / (maxLat - minLat) - 0.5)) * scaleFactor;
             
+            if (dtVal >= 0 && dtVal < 17) {
+                dtCentroids[dtVal].x += x;
+                dtCentroids[dtVal].z += z;
+                dtCentroids[dtVal].count++;
+            }
+
             posList.push(new THREE.Vector3(x, y, z));
             types.push(typeVal);
             dtList.push(dtVal);
@@ -150,7 +161,15 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
             current++;
         }
 
-        const geo = new THREE.IcosahedronGeometry(0.016, 0);
+        dtCentroids.forEach(c => {
+            if (c.count > 0) {
+                c.x /= c.count;
+                c.z /= c.count;
+            }
+        });
+
+        // Use 2D Plane Geometry (0.032 x 0.032) instead of 3D Icosahedron
+        const geo = new THREE.PlaneGeometry(0.032, 0.032);
         const typesArr = new Float32Array(posList.length);
         const elevArr = new Float32Array(posList.length);
         const dtArr = new Float32Array(posList.length);
@@ -168,13 +187,14 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
         geo.setAttribute('aDT', new THREE.InstancedBufferAttribute(dtArr, 1));
         geo.setAttribute('aForest', new THREE.InstancedBufferAttribute(forestArr, 1));
 
-        const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true });
+        const mat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
         
         mat.onBeforeCompile = (shader) => {
             shader.uniforms.uTime = { value: 0 };
             shader.uniforms.uSize = { value: (isMobile ? 6.0 : 4.0) * Math.min(window.devicePixelRatio, 2) };
             shader.uniforms.uHoveredDT = { value: -1.0 }; 
             shader.uniforms.uHoverBlend = { value: 0.0 }; 
+            shader.uniforms.uSmoothCamPos = { value: smoothCamPos };
             
             mat.userData.shader = shader;
             
@@ -187,34 +207,47 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
                 varying float vElevation;
                 varying float vType;
                 varying float vDT;
+                varying vec2 vUv;
                 
                 uniform float uTime;
                 uniform float uSize;
+                uniform vec3 uSmoothCamPos;
             ` + shader.vertexShader;
 
             shader.vertexShader = shader.vertexShader.replace(
                 '#include <begin_vertex>',
                 `
-                #include <begin_vertex>
                 vType = aType;
                 vElevation = aElevation;
                 vDT = aDT;
+                vUv = uv;
                 
                 float sizeMult = 0.7 + (aForest * 1.1);
-                transformed *= (uSize / 4.0) * sizeMult;
+                vec3 localPos = position * (uSize / 4.0) * sizeMult;
                 
                 vec4 iPos = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
                 float sway = (aType < 1.5) ? 0.04 : 0.14;
                 float wave = sin(uTime * 1.4 + iPos.x * 1.1 + iPos.z * 1.1) * cos(uTime * 1.0 + iPos.x * 0.7) * 0.06;
                 
                 if (aType > 0.5) { 
-                    transformed.x += aElevation * wave * sway; 
-                    transformed.z += aElevation * wave * sway * 0.4; 
+                    iPos.x += aElevation * wave * sway; 
+                    iPos.z += aElevation * wave * sway * 0.4; 
                 } else { 
                     float oW = sin(iPos.x * 2.2 + uTime * 1.6) * cos(iPos.z * 2.2 + uTime * 1.2) * 0.035; 
-                    transformed.y += oW; 
+                    iPos.y += oW; 
                     vElevation += oW; 
                 }
+
+                // SUNFLOWER BILLBOARD ROTATION (Turn 2D faces toward uSmoothCamPos)
+                vec3 targetVec = normalize(uSmoothCamPos - iPos.xyz);
+                vec3 up = vec3(0.0, 1.0, 0.0);
+                if (abs(dot(targetVec, up)) > 0.99) {
+                    up = vec3(0.0, 0.0, 1.0);
+                }
+                vec3 rightVec = normalize(cross(up, targetVec));
+                vec3 upVec = cross(targetVec, rightVec);
+
+                vec3 transformed = iPos.xyz + (rightVec * localPos.x + upVec * localPos.y + targetVec * localPos.z);
                 `
             );
 
@@ -222,6 +255,8 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
                 varying float vElevation;
                 varying float vType;
                 varying float vDT;
+                varying vec2 vUv;
+                
                 uniform float uHoveredDT;
                 uniform float uHoverBlend;
             ` + shader.fragmentShader;
@@ -229,6 +264,10 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
             shader.fragmentShader = shader.fragmentShader.replace(
                 'vec4 diffuseColor = vec4( diffuse, opacity );',
                 `
+                // 2D Disc Cutout Shader
+                float distToCenter = length(vUv - vec2(0.5));
+                if (distToCenter > 0.5) discard;
+
                 vec3 customColor = vec3(0.0);
                 
                 if (vType < 0.5) {
@@ -250,7 +289,7 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
                     else if (nH < 0.75) customColor = mix(c2, c3, (nH - 0.50)/0.25);
                     else customColor = mix(c3, c4, (nH - 0.75)/0.25);
 
-                    // HOVER HIGHLIGHT: Dark Brick / Red Dirt (#A83D1E)
+                    // HOVER HIGHLIGHT: Dark Brick (#A83D1E)
                     if (uHoveredDT >= 0.0 && abs(vDT - uHoveredDT) < 0.1) {
                         vec3 darkBrick = vec3(0.659, 0.239, 0.118);
                         customColor = mix(customColor, darkBrick, 0.88 * uHoverBlend);
@@ -320,9 +359,13 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
     const flockOfBirds = new THREE.Points(birdsGeo, birdsMat);
     scene.add(flockOfBirds);
 
-    // --- Custom Drone Camera Controller ---
+    // --- Custom Drone Camera Controller & States ---
     const camState = { targetX: 0, targetZ: 2, targetYaw: 0, zoom: 0.3 };
-    let isDragging = false, lastMousePos = { x: 0, y: 0 }, touchStartDist = 0;
+    let isDragging = false, lastMousePos = { x: 0, y: 0 };
+    let isFocused = false; 
+
+    let pointerDownPos = { x: 0, y: 0 };
+    let pointerDownTime = 0;
 
     const innerLimit = mapWidth * 0.25, outerLimit = mapWidth * 0.45; 
     function applyFriction(currentPos, move) {
@@ -331,9 +374,23 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
         return move;
     }
 
-    function handleDown(x, y) { isDragging = true; lastMousePos = { x, y }; }
+    function handleDown(x, y) { 
+        isDragging = true; 
+        lastMousePos = { x, y }; 
+        pointerDownPos = { x, y };
+        pointerDownTime = performance.now();
+    }
+    
     function handleMove(x, y) {
         if (!isDragging) return;
+
+        if (isFocused) {
+            const dragDist = Math.hypot(x - pointerDownPos.x, y - pointerDownPos.y);
+            if (dragDist > 5) { 
+                exitFocus();
+            }
+        }
+
         const deltaX = x - lastMousePos.x, deltaY = y - lastMousePos.y;
         
         const cenitalProgress = Math.max(0, Math.min(1, (camState.zoom - 0.8) / 0.2));
@@ -354,22 +411,37 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
     window.addEventListener('pointerdown', (e) => handleDown(e.clientX, e.clientY));
     window.addEventListener('pointerup', () => isDragging = false);
     window.addEventListener('pointermove', (e) => handleMove(e.clientX, e.clientY));
-    window.addEventListener('wheel', (e) => { camState.zoom = Math.max(0, Math.min(1, camState.zoom + e.deltaY * 0.0003)); });
+    window.addEventListener('wheel', (e) => { 
+        if (!isFocused) {
+            camState.zoom = Math.max(0, Math.min(1, camState.zoom + e.deltaY * 0.0003)); 
+        }
+    });
 
     // ==========================================
-    // 4. RAYCASTER & HOVER CONTROLLER
+    // 4. RAYCASTER, HOVER & FOCUS CONTROLLER
     // ==========================================
     const raycaster = new THREE.Raycaster();
     const mouseVec = new THREE.Vector2();
     
+    let pendingDT = -1;
     let activeDT = -1;
-    let textTimer = null;
+    let hoverColorTimer = null;
+    let hoverTextTimer = null;
+
+    let normMouseX = 0;
+    let normMouseY = 0;
+    let smoothMouseX = 0;
+    let smoothMouseY = 0;
 
     window.addEventListener('mousemove', (e) => {
         cursorX = e.clientX;
         cursorY = e.clientY;
 
-        if (!isDragging && dtsData) {
+        normMouseX = (e.clientX / window.innerWidth) - 0.5;
+        normMouseY = (e.clientY / window.innerHeight) - 0.5;
+
+        // Hover Detection
+        if (!isDragging && !isFocused && dtsData) {
             mouseVec.x = (e.clientX / window.innerWidth) * 2 - 1;
             mouseVec.y = -(e.clientY / window.innerHeight) * 2 + 1;
 
@@ -392,57 +464,159 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
                 }
             }
 
-            // Trigger state change only when hovering a NEW region or exiting
-            if (detectedIdx !== activeDT) {
-                activeDT = detectedIdx;
+            if (detectedIdx !== pendingDT) {
+                pendingDT = detectedIdx;
+
+                if (hoverColorTimer) { clearTimeout(hoverColorTimer); hoverColorTimer = null; }
+                if (hoverTextTimer) { clearTimeout(hoverTextTimer); hoverTextTimer = null; }
 
                 const titleEl = document.querySelector('#location-title');
-
-                // Cancel previous timer & hide text immediately
-                if (textTimer) { clearTimeout(textTimer); textTimer = null; }
-                if (titleEl) {
-                    titleEl.style.opacity = '0';
-                }
+                if (titleEl) titleEl.style.opacity = '0';
 
                 const shader = instancedMesh?.material?.userData?.shader;
 
-                if (activeDT >= 0 && departments[activeDT]) {
-                    // 1. Start 1-second delay for the centered URT text
-                    textTimer = setTimeout(() => {
+                if (shader) {
+                    gsap.to(shader.uniforms.uHoverBlend, {
+                        value: 0.0,
+                        duration: 0.25,
+                        ease: 'power1.out',
+                        overwrite: true
+                    });
+                }
+
+                if (pendingDT >= 0 && departments[pendingDT]) {
+                    hoverColorTimer = setTimeout(() => {
+                        activeDT = pendingDT;
+                        if (shader && activeDT >= 0) {
+                            shader.uniforms.uHoveredDT.value = activeDT;
+                            gsap.to(shader.uniforms.uHoverBlend, {
+                                value: 1.0, duration: 0.5, ease: 'power2.out', overwrite: true
+                            });
+                        }
+                    }, 250);
+
+                    hoverTextTimer = setTimeout(() => {
                         const currentTitle = document.querySelector('#location-title');
-                        if (activeDT >= 0 && departments[activeDT] && currentTitle) {
+                        if (pendingDT === activeDT && activeDT >= 0 && departments[activeDT] && currentTitle) {
                             currentTitle.innerText = departments[activeDT].name;
                             currentTitle.style.opacity = '1';
                         }
                     }, 1000);
-
-                    // 2. Start smooth Dark Brick color fade-in
-                    if (shader) {
-                        shader.uniforms.uHoveredDT.value = activeDT;
-                        gsap.to(shader.uniforms.uHoverBlend, {
-                            value: 1.0,
-                            duration: 0.6,
-                            ease: 'power2.out',
-                            overwrite: true
-                        });
-                    }
                 } else {
-                    // Moved out into empty space: fade color out
+                    activeDT = -1;
                     if (shader) {
                         gsap.to(shader.uniforms.uHoverBlend, {
-                            value: 0.0,
-                            duration: 0.5,
-                            ease: 'power2.out',
-                            overwrite: true,
-                            onComplete: () => {
-                                shader.uniforms.uHoveredDT.value = -1.0;
-                            }
+                            value: 0.0, duration: 0.4, ease: 'power2.out', overwrite: true,
+                            onComplete: () => { shader.uniforms.uHoveredDT.value = -1.0; }
                         });
                     }
                 }
             }
         }
     });
+
+    // --- SAFE CLICK HANDLER ---
+    window.addEventListener('click', (e) => {
+        const dragDist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
+        const duration = performance.now() - pointerDownTime;
+
+        if (dragDist < 6 && duration < 300) {
+            if (!isFocused && activeDT >= 0 && dtCentroids[activeDT]) {
+                enterFocus(activeDT);
+            }
+        }
+    });
+
+    function enterFocus(dtIndex) {
+        isFocused = true;
+        activeDT = dtIndex;
+        pendingDT = dtIndex;
+
+        const targetCentroid = dtCentroids[dtIndex];
+        const titleEl = document.querySelector('#location-title');
+        const bannerEl = document.querySelector('#location-banner');
+        const btnBack = document.querySelector('#btn-back');
+        const scrollPrompt = document.querySelector('#scroll-prompt');
+        const shader = instancedMesh?.material?.userData?.shader;
+
+        if (hoverColorTimer) clearTimeout(hoverColorTimer);
+        if (hoverTextTimer) clearTimeout(hoverTextTimer);
+
+        if (titleEl) {
+            titleEl.innerText = departments[dtIndex].name;
+            titleEl.style.opacity = '1';
+        }
+
+        if (shader) {
+            shader.uniforms.uHoveredDT.value = dtIndex;
+            gsap.to(shader.uniforms.uHoverBlend, {
+                value: 1.0,
+                duration: 0.8,
+                ease: 'power2.out',
+                overwrite: true
+            });
+        }
+
+        gsap.to(camState, {
+            targetX: targetCentroid.x,
+            targetZ: targetCentroid.z + 1.2, 
+            zoom: 0.15,
+            targetYaw: 0,
+            duration: 1.8,
+            ease: 'power3.inOut'
+        });
+
+        if (bannerEl) bannerEl.classList.remove('hidden');
+        if (btnBack) btnBack.classList.remove('hidden');
+        if (scrollPrompt) scrollPrompt.classList.remove('hidden');
+    }
+
+    function exitFocus() {
+        if (!isFocused) return;
+        isFocused = false;
+        activeDT = -1;
+        pendingDT = -1;
+
+        const titleEl = document.querySelector('#location-title');
+        const bannerEl = document.querySelector('#location-banner');
+        const btnBack = document.querySelector('#btn-back');
+        const scrollPrompt = document.querySelector('#scroll-prompt');
+        const shader = instancedMesh?.material?.userData?.shader;
+
+        if (titleEl) {
+            titleEl.style.opacity = '0';
+            titleEl.style.transform = ''; 
+        }
+        if (bannerEl) {
+            bannerEl.classList.add('hidden');
+            bannerEl.style.transform = ''; 
+        }
+        if (btnBack) btnBack.classList.add('hidden');
+        if (scrollPrompt) scrollPrompt.classList.add('hidden');
+
+        if (shader) {
+            gsap.to(shader.uniforms.uHoverBlend, {
+                value: 0.0, duration: 0.6, ease: 'power2.out', overwrite: true,
+                onComplete: () => { shader.uniforms.uHoveredDT.value = -1.0; }
+            });
+        }
+
+        gsap.to(camState, {
+            targetX: 0,
+            targetZ: 2,
+            zoom: 0.3,
+            duration: 1.4,
+            ease: 'power2.out'
+        });
+    }
+
+    const btnBack = document.querySelector('#btn-back');
+    if (btnBack) {
+        btnBack.addEventListener('click', (e) => {
+            e.stopPropagation();
+            exitFocus();
+        });
+    }
 
     const cursorElement = document.querySelector('#custom-cursor');
     let cursorX = window.innerWidth / 2, cursorY = window.innerHeight / 2, cursorRot = 0;
@@ -470,8 +644,34 @@ function initApp(elevPixelData, terrPixelData, dtsPixelData, forestPixelData, is
         const targetPitch = lerp(-Math.PI / 4, -Math.PI / 2, Math.min(camState.zoom / 0.8, 1.0));
 
         const lastCamX = camera.position.x, lastCamZ = camera.position.z;
-        camera.position.x = lerp(camera.position.x, camState.targetX, 0.035);
-        camera.position.z = lerp(camera.position.z, camState.targetZ, 0.035);
+
+        // SUNFLOWER DELAYED CAMERA TRACKER (Lerp factor 0.025)
+        smoothCamPos.x = lerp(smoothCamPos.x, camera.position.x, 0.025);
+        smoothCamPos.y = lerp(smoothCamPos.y, camera.position.y, 0.025);
+        smoothCamPos.z = lerp(smoothCamPos.z, camera.position.z, 0.025);
+
+        // SILKY SMOOTH PARALLAX LERP
+        smoothMouseX = lerp(smoothMouseX, normMouseX, 0.02);
+        smoothMouseY = lerp(smoothMouseY, normMouseY, 0.02);
+
+        let focusPanX = 0, focusPanZ = 0;
+        if (isFocused) {
+            focusPanX = smoothMouseX * 0.15;
+            focusPanZ = smoothMouseY * 0.15;
+
+            const titleEl = document.querySelector('#location-title');
+            const bannerEl = document.querySelector('#location-banner');
+
+            if (titleEl) {
+                titleEl.style.transform = `translate(${smoothMouseX * 5}px, ${smoothMouseY * 5}px)`;
+            }
+            if (bannerEl && !bannerEl.classList.contains('hidden')) {
+                bannerEl.style.transform = `translate(${smoothMouseX * -8}px, ${smoothMouseY * -8}px)`;
+            }
+        }
+
+        camera.position.x = lerp(camera.position.x, camState.targetX + focusPanX, 0.035);
+        camera.position.z = lerp(camera.position.z, camState.targetZ + focusPanZ, 0.035);
         camera.position.y = lerp(camera.position.y, targetHeight, 0.035);
         camera.rotation.x = lerp(camera.rotation.x, targetPitch, 0.035);
         camera.rotation.y = lerp(camera.rotation.y, camState.targetYaw, 0.035);
